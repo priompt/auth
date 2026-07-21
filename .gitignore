@@ -1,0 +1,7 @@
+# Signing keys — never commit
+*.key
+*.pem
+
+# Binaries
+/priompt-auth
+/priompt-auth.exe

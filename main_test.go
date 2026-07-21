@@ -1,0 +1,203 @@
+package main
+
+import (
+	"crypto"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+)
+
+func testService(t *testing.T) (*service, *httptest.Server) {
+	t.Helper()
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	secretSum := sha256.Sum256([]byte("s3cret"))
+	s := &service{
+		priv: priv, pub: pub, kid: keyID(pub), ttl: 15 * time.Minute,
+		clients: map[string]client{
+			"ci-bot": {secretHash: hex.EncodeToString(secretSum[:]), grant: grant{org: "acme", rw: true}},
+		},
+		audit: slog.New(slog.DiscardHandler),
+	}
+	srv := httptest.NewServer(s.routes())
+	t.Cleanup(srv.Close)
+	return s, srv
+}
+
+// getToken posts the form and returns the HTTP status and access_token.
+func getToken(t *testing.T, srv *httptest.Server, form url.Values) (int, string) {
+	t.Helper()
+	resp, err := http.PostForm(srv.URL+"/token", form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		AccessToken string `json:"access_token"`
+	}
+	json.NewDecoder(resp.Body).Decode(&body)
+	return resp.StatusCode, body.AccessToken
+}
+
+// decodeClaims parses (without verifying) the payload of a compact JWT.
+func decodeClaims(t *testing.T, tok string) Claims {
+	t.Helper()
+	parts := strings.Split(tok, ".")
+	if len(parts) != 3 {
+		t.Fatalf("not a JWT: %q", tok)
+	}
+	b, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c Claims
+	if err := json.Unmarshal(b, &c); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestMintRoundTrip(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	tok := mintJWT(priv, keyID(pub), Claims{Sub: "x", Org: "acme", RW: true, Exp: time.Now().Add(time.Hour).Unix()})
+	parts := strings.Split(tok, ".")
+	sig, _ := base64.RawURLEncoding.DecodeString(parts[2])
+	if !ed25519.Verify(pub, []byte(parts[0]+"."+parts[1]), sig) {
+		t.Fatal("minted token must verify against the public key")
+	}
+	// The JWKS document round-trips the same public key.
+	var doc struct {
+		Keys []struct{ X string }
+	}
+	if err := json.Unmarshal(jwksJSON(pub, keyID(pub)), &doc); err != nil || len(doc.Keys) != 1 {
+		t.Fatalf("bad jwks: %v", err)
+	}
+	x, _ := base64.RawURLEncoding.DecodeString(doc.Keys[0].X)
+	if !ed25519.PublicKey(x).Equal(pub) {
+		t.Fatal("jwks must carry the signing public key")
+	}
+}
+
+func TestClientCredentials(t *testing.T) {
+	_, srv := testService(t)
+
+	code, tok := getToken(t, srv, url.Values{
+		"grant_type": {"client_credentials"}, "client_id": {"ci-bot"}, "client_secret": {"s3cret"}})
+	if code != 200 || tok == "" {
+		t.Fatalf("valid credentials must issue a token, got %d %q", code, tok)
+	}
+	c := decodeClaims(t, tok)
+	if c.Sub != "ci-bot" || c.Org != "acme" || !c.RW || c.Exp <= time.Now().Unix() {
+		t.Errorf("wrong claims: %+v", c)
+	}
+
+	if code, _ := getToken(t, srv, url.Values{
+		"grant_type": {"client_credentials"}, "client_id": {"ci-bot"}, "client_secret": {"wrong"}}); code != 401 {
+		t.Errorf("wrong secret must 401, got %d", code)
+	}
+	if code, _ := getToken(t, srv, url.Values{
+		"grant_type": {"client_credentials"}, "client_id": {"nobody"}, "client_secret": {"s3cret"}}); code != 401 {
+		t.Errorf("unknown client must 401, got %d", code)
+	}
+	if code, _ := getToken(t, srv, url.Values{"grant_type": {"password"}}); code != 400 {
+		t.Errorf("unsupported grant must 400, got %d", code)
+	}
+}
+
+// fakeIdP is a minimal OIDC provider: discovery, an RSA JWKS, and a helper to
+// mint RS256 ID tokens the way Okta/Azure AD would.
+type fakeIdP struct {
+	srv  *httptest.Server
+	priv *rsa.PrivateKey
+}
+
+func newFakeIdP(t *testing.T) *fakeIdP {
+	t.Helper()
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeIdP{priv: priv}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"jwks_uri":%q}`, f.srv.URL+"/keys")
+	})
+	mux.HandleFunc("/keys", func(w http.ResponseWriter, r *http.Request) {
+		pub := &priv.PublicKey
+		fmt.Fprintf(w, `{"keys":[{"kty":"RSA","kid":"idp1","n":%q,"e":%q}]}`,
+			base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+			base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()))
+	})
+	f.srv = httptest.NewServer(mux)
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeIdP) idToken(t *testing.T, iss, sub string, groups []string, exp time.Time) string {
+	t.Helper()
+	h := b64(map[string]string{"alg": "RS256", "typ": "JWT", "kid": "idp1"})
+	p := b64(map[string]any{"iss": iss, "sub": sub, "aud": "priompt", "exp": exp.Unix(), "groups": groups})
+	sum := sha256.Sum256([]byte(h + "." + p))
+	sig, err := rsa.SignPKCS1v15(rand.Reader, f.priv, crypto.SHA256, sum[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h + "." + p + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+func TestOIDCExchange(t *testing.T) {
+	f := newFakeIdP(t)
+	s, srv := testService(t)
+	idp, err := newIDP(f.srv.URL, "priompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.idp = idp
+	s.groups = []groupRule{
+		{group: "prompt-admins", grant: grant{rw: true}}, // admin, all orgs
+		{group: "acme-authors", grant: grant{org: "acme", rw: true}},
+		{group: "acme-readers", grant: grant{org: "acme"}},
+	}
+
+	exp := time.Now().Add(time.Hour)
+	code, tok := getToken(t, srv, url.Values{
+		"grant_type": {"oidc"}, "id_token": {f.idToken(t, f.srv.URL, "sujal@acme.com", []string{"acme-authors"}, exp)}})
+	if code != 200 {
+		t.Fatalf("valid ID token must exchange, got %d", code)
+	}
+	if c := decodeClaims(t, tok); c.Sub != "sujal@acme.com" || c.Org != "acme" || !c.RW {
+		t.Errorf("wrong mapped claims: %+v", c)
+	}
+
+	// First matching rule wins: an admin-group member gets the admin grant.
+	_, tok = getToken(t, srv, url.Values{
+		"grant_type": {"oidc"}, "id_token": {f.idToken(t, f.srv.URL, "root@acme.com", []string{"prompt-admins", "acme-readers"}, exp)}})
+	if c := decodeClaims(t, tok); c.Org != "" || !c.RW {
+		t.Errorf("admin group must map to unscoped rw, got %+v", c)
+	}
+
+	if code, _ := getToken(t, srv, url.Values{
+		"grant_type": {"oidc"}, "id_token": {f.idToken(t, f.srv.URL, "guest@acme.com", []string{"unmapped"}, exp)}}); code != 403 {
+		t.Errorf("unmapped groups must 403, got %d", code)
+	}
+	if code, _ := getToken(t, srv, url.Values{
+		"grant_type": {"oidc"}, "id_token": {f.idToken(t, "https://evil.example", "x", []string{"acme-authors"}, exp)}}); code != 401 {
+		t.Errorf("wrong issuer must 401, got %d", code)
+	}
+	if code, _ := getToken(t, srv, url.Values{
+		"grant_type": {"oidc"}, "id_token": {f.idToken(t, f.srv.URL, "x", []string{"acme-authors"}, time.Now().Add(-time.Minute))}}); code != 401 {
+		t.Errorf("expired ID token must 401, got %d", code)
+	}
+}
