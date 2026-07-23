@@ -1,14 +1,9 @@
 package main
 
-// Compact EdDSA JWT minting — the issuing half of the claims contract whose
-// verifying half lives in the core server's internal/auth package:
-//
-//	header: {"alg":"EdDSA","typ":"JWT","kid":"<key id>"}
-//	claims: sub (who), org ("" = admin, all orgs), rw (bool, may write),
-//	        exp/iat (unix seconds, exp always set — tokens are short-lived),
-//	        iss ("priompt-auth")
-//
-// Change the contract in both repos together.
+// Compact EdDSA JWT minting — the issuing half of the claims contract. The
+// contract itself is defined once in the shared proto repo
+// (priomptproto/claims) and imported by both this issuer and the core
+// server's verifier, so the two halves cannot drift.
 
 import (
 	"crypto/ed25519"
@@ -17,17 +12,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
+	"priomptproto/claims"
 )
 
-// Claims is the payload of an issued token.
-type Claims struct {
-	Sub string `json:"sub"`
-	Org string `json:"org"`
-	RW  bool   `json:"rw"`
-	Exp int64  `json:"exp"`
-	Iat int64  `json:"iat"`
-	Iss string `json:"iss"`
-}
+// Claims is the payload of an issued token — the shared contract.
+type Claims = claims.Claims
 
 // keyID derives a stable short identifier from the public key, so rotation is
 // just "new key file, new kid" with both keys served in the JWKS while old

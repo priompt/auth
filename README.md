@@ -117,8 +117,9 @@ halves. Revoke by deleting the line and restarting.
 
 ## What an issued token says
 
-Compact EdDSA (Ed25519) JWT. The claims contract — **shared with the core
-server's `internal/auth`, change it in both repos together**:
+Compact EdDSA (Ed25519) JWT. The claims contract is **defined once in the
+shared proto repo (`priomptproto/claims`)** and imported by both this issuer
+and the core server's verifier — the two halves cannot drift:
 
 | Claim | Example | Meaning |
 | --- | --- | --- |
@@ -147,7 +148,8 @@ needs no server restart.
 
 | Repo | Role |
 | --- | --- |
-| **priompt** | Verifies what this service issues (`internal/auth`, `-auth-jwks-url`). The two halves share only the claims contract above. |
+| **priompt** | Verifies what this service issues (`internal/auth`, `-auth-jwks-url`) — its `JWKSProvider` is one implementation of the server's pluggable auth `Provider` interface |
+| **proto** | Hosts the shared claims contract (`priomptproto/claims`) both repos import |
 | **python-sdk / js-sdk / cli** | Unchanged — a JWT is just a bearer token to them |
 
 Tests: `go test ./...` (covers minting, client credentials, and the OIDC
