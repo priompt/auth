@@ -27,6 +27,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"priomptauth/authn"
 )
 
 func main() {
@@ -71,7 +73,7 @@ func initCmd(args []string) {
 	if err := os.WriteFile(*keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("wrote %s (kid %s)\n", *keyFile, keyID(pub))
+	fmt.Printf("wrote %s (kid %s)\n", *keyFile, authn.KeyID(pub))
 	fmt.Printf("next: priompt-auth gen-secret <client-id> [org] [rw], then priompt-auth serve\n")
 	fmt.Printf("point the server at it: priompt serve -auth-jwks-url http://<this-host>:8444/jwks\n")
 }
@@ -138,7 +140,7 @@ func serveCmd(args []string) {
 		ttl:   *ttl,
 		audit: slog.New(slog.NewJSONHandler(os.Stderr, nil)),
 	}
-	s.kid = keyID(s.pub)
+	s.kid = authn.KeyID(s.pub)
 	if *clientsFile != "" {
 		s.clients = loadClients(*clientsFile)
 	}
@@ -166,7 +168,7 @@ func (s *service) routes() http.Handler {
 	mux.HandleFunc("POST /token", s.token)
 	mux.HandleFunc("GET /jwks", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write(jwksJSON(s.pub, s.kid))
+		w.Write(authn.JWKSJSON(s.pub, s.kid))
 	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) })
 	return mux
@@ -218,7 +220,7 @@ func (s *service) token(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	tok := mintJWT(s.priv, s.kid, Claims{
+	tok := authn.MintJWT(s.priv, s.kid, authn.Claims{
 		Sub: sub, Org: g.org, RW: g.rw,
 		Iat: now.Unix(), Exp: now.Add(s.ttl).Unix(), Iss: "priompt-auth",
 	})

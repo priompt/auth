@@ -18,14 +18,26 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"priomptauth/authn"
 )
+
+// b64 renders a value as a base64url JSON segment, for hand-building the fake
+// IdP's RS256 tokens. (Issuing priompt-auth's own tokens is authn's job.)
+func b64(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b)
+}
 
 func testService(t *testing.T) (*service, *httptest.Server) {
 	t.Helper()
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	secretSum := sha256.Sum256([]byte("s3cret"))
 	s := &service{
-		priv: priv, pub: pub, kid: keyID(pub), ttl: 15 * time.Minute,
+		priv: priv, pub: pub, kid: authn.KeyID(pub), ttl: 15 * time.Minute,
 		clients: map[string]client{
 			"ci-bot": {secretHash: hex.EncodeToString(secretSum[:]), grant: grant{org: "acme", rw: true}},
 		},
@@ -52,7 +64,7 @@ func getToken(t *testing.T, srv *httptest.Server, form url.Values) (int, string)
 }
 
 // decodeClaims parses (without verifying) the payload of a compact JWT.
-func decodeClaims(t *testing.T, tok string) Claims {
+func decodeClaims(t *testing.T, tok string) authn.Claims {
 	t.Helper()
 	parts := strings.Split(tok, ".")
 	if len(parts) != 3 {
@@ -62,32 +74,11 @@ func decodeClaims(t *testing.T, tok string) Claims {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var c Claims
+	var c authn.Claims
 	if err := json.Unmarshal(b, &c); err != nil {
 		t.Fatal(err)
 	}
 	return c
-}
-
-func TestMintRoundTrip(t *testing.T) {
-	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
-	tok := mintJWT(priv, keyID(pub), Claims{Sub: "x", Org: "acme", RW: true, Exp: time.Now().Add(time.Hour).Unix()})
-	parts := strings.Split(tok, ".")
-	sig, _ := base64.RawURLEncoding.DecodeString(parts[2])
-	if !ed25519.Verify(pub, []byte(parts[0]+"."+parts[1]), sig) {
-		t.Fatal("minted token must verify against the public key")
-	}
-	// The JWKS document round-trips the same public key.
-	var doc struct {
-		Keys []struct{ X string }
-	}
-	if err := json.Unmarshal(jwksJSON(pub, keyID(pub)), &doc); err != nil || len(doc.Keys) != 1 {
-		t.Fatalf("bad jwks: %v", err)
-	}
-	x, _ := base64.RawURLEncoding.DecodeString(doc.Keys[0].X)
-	if !ed25519.PublicKey(x).Equal(pub) {
-		t.Fatal("jwks must carry the signing public key")
-	}
 }
 
 func TestClientCredentials(t *testing.T) {

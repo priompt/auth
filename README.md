@@ -148,9 +148,33 @@ needs no server restart.
 
 | Repo | Role |
 | --- | --- |
-| **priompt** | Verifies what this service issues (`internal/auth`, `-auth-jwks-url`) — its `JWKSProvider` is one implementation of the server's pluggable auth `Provider` interface |
+| **priompt** | Imports `priomptauth/authn` for *all* authentication and runs it with `-tokens-file` / `-auth-jwks-url`. Core itself holds no credential code — only authorization (org scoping, the write gate) |
 | **proto** | Hosts the shared claims contract (`priomptproto/claims`) both repos import |
 | **python-sdk / js-sdk / cli** | Unchanged — a JWT is just a bearer token to them |
 
-Tests: `go test ./...` (covers minting, client credentials, and the OIDC
-exchange against a fake IdP — no real IdP needed).
+## `authn` — the importable half
+
+This repo is two things: the `priompt-auth` **binary** at the root, and the
+`priomptauth/authn` **package** it and the core server both import.
+
+`authn` owns every credential mechanic in the family:
+
+| | |
+| --- | --- |
+| `MintJWT`, `JWKSJSON`, `KeyID` | issuing — used by this binary |
+| `KeySet.Verify` | verifying — used by the core server |
+| `LoadTokens`, `GenToken`, `Token` | the static tokens file |
+| `Provider`, `NewStatic`, `NewJWKS`, `Interceptor`, `Identity` | the gRPC gate and its pluggable providers |
+
+Minting and verification sitting in one package is the point: the two halves of
+the token format cannot drift, and the round trip is testable in one place
+(`TestMintVerifyRoundTrip`). Previously the verifier was a second, hand-kept
+copy inside the server.
+
+Core imports this package but **never calls this service** — verification is
+offline against cached `/jwks` keys, so `priompt` build-depends on the auth repo
+while staying runtime-independent of the auth process.
+
+Tests: `go test ./...` (covers minting, verification, the tokens file, the gRPC
+gate, client credentials, and the OIDC exchange against a fake IdP — no real
+IdP needed).

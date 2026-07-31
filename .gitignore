@@ -4,4 +4,4 @@
 
 # Binaries
 /priompt-auth
-/priompt-auth.exe
+*.exe
