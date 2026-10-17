@@ -28,7 +28,7 @@ import (
 	"strings"
 	"time"
 
-	"priomptauth/authn"
+	"github.com/priompt/auth/authn"
 )
 
 func main() {
