@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"priomptauth/authn"
+	"github.com/priompt/auth/authn"
 )
 
 // b64 renders a value as a base64url JSON segment, for hand-building the fake

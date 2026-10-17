@@ -6,7 +6,7 @@ package authn
 // package is the point — they cannot drift, and the round trip is testable.
 //
 // The claims contract itself is defined once in the shared proto repo
-// (priomptproto/claims), so the wire payload is the same struct on both sides.
+// (github.com/priompt/proto/claims), so the wire payload is the same struct on both sides.
 
 import (
 	"crypto/ed25519"
@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"priomptproto/claims"
+	"github.com/priompt/proto/claims"
 )
 
 // Claims is the payload of a priompt-auth JWT — the shared contract.

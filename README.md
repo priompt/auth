@@ -40,7 +40,8 @@ sequenceDiagram
 ## Quick start
 
 ```sh
-go build -o priompt-auth .            # Go 1.25+
+go install github.com/priompt/auth/cmd/priompt-auth@latest   # Go 1.25+
+# or, from a clone: go build -o priompt-auth ./cmd/priompt-auth
 
 # 1. one-time: generate the signing keypair
 ./priompt-auth init                   # -> auth.key (kid printed)
@@ -118,7 +119,7 @@ halves. Revoke by deleting the line and restarting.
 ## What an issued token says
 
 Compact EdDSA (Ed25519) JWT. The claims contract is **defined once in the
-shared proto repo (`priomptproto/claims`)** and imported by both this issuer
+shared proto repo (`github.com/priompt/proto/claims`)** and imported by both this issuer
 and the core server's verifier — the two halves cannot drift:
 
 | Claim | Example | Meaning |
@@ -148,14 +149,14 @@ needs no server restart.
 
 | Repo | Role |
 | --- | --- |
-| **priompt** | Imports `priomptauth/authn` for *all* authentication and runs it with `-tokens-file` / `-auth-jwks-url`. Core itself holds no credential code — only authorization (org scoping, the write gate) |
-| **proto** | Hosts the shared claims contract (`priomptproto/claims`) both repos import |
+| **priompt** | Imports `github.com/priompt/auth/authn` for *all* authentication and runs it with `-tokens-file` / `-auth-jwks-url`. Core itself holds no credential code — only authorization (org scoping, the write gate) |
+| **proto** | Hosts the shared claims contract (`github.com/priompt/proto/claims`) both repos import |
 | **python-sdk / js-sdk / cli** | Unchanged — a JWT is just a bearer token to them |
 
 ## `authn` — the importable half
 
 This repo is two things: the `priompt-auth` **binary** at the root, and the
-`priomptauth/authn` **package** it and the core server both import.
+`github.com/priompt/auth/authn` **package** it and the core server both import.
 
 `authn` owns every credential mechanic in the family:
 
