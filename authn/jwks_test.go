@@ -1,6 +1,7 @@
 package authn
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -104,5 +105,26 @@ func TestInterceptorJWT(t *testing.T) {
 	}
 	if ok, _, _ := run(chain, "Bearer bad.jwt.token"); ok {
 		t.Error("malformed JWT must be rejected")
+	}
+}
+
+// TestIdentityExpires: both providers report when the credential lapses, so a
+// connection that authenticated once (a NATS subscriber) can be closed then.
+func TestIdentityExpires(t *testing.T) {
+	ctx := context.Background()
+	exp := time.Now().Add(time.Hour).Truncate(time.Second)
+	id, err := NewStatic(map[string]Token{"t1": {Org: "acme", Expires: exp}, "t2": {}}).Authenticate(ctx, "Bearer t1")
+	if err != nil || !id.Expires.Equal(exp) {
+		t.Fatalf("static: Expires = %v err=%v, want %v", id.Expires, err, exp)
+	}
+	if id, _ := NewStatic(map[string]Token{"t2": {}}).Authenticate(ctx, "Bearer t2"); !id.Expires.IsZero() {
+		t.Fatalf("static without expiry: Expires = %v, want zero", id.Expires)
+	}
+
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	p := JWKSProvider{Keys: NewKeySet(jwksServer(t, "k1", pub).URL)}
+	id, err = p.Authenticate(ctx, "Bearer "+MintJWT(priv, "k1", Claims{Org: "acme", Exp: exp.Unix()}))
+	if err != nil || !id.Expires.Equal(exp) {
+		t.Fatalf("jwt: Expires = %v err=%v, want %v", id.Expires, err, exp)
 	}
 }

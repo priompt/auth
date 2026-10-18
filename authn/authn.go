@@ -33,11 +33,14 @@ type identityKey struct{}
 
 // Identity is who a request acts as, established by a Provider. Org "" is
 // admin (all orgs); Write gates mutating RPCs; Sub is the principal for audit
-// trails ("" for static tokens, the JWT sub for priompt-auth tokens).
+// trails ("" for static tokens, the JWT sub for priompt-auth tokens). Expires is
+// when the credential lapses (zero = never), so long-lived connections that
+// authenticate once, such as NATS subscribers, can be closed at that point.
 type Identity struct {
-	Sub   string
-	Org   string
-	Write bool
+	Sub     string
+	Org     string
+	Write   bool
+	Expires time.Time
 }
 
 // Provider authenticates one kind of bearer credential. It receives the raw
@@ -98,7 +101,7 @@ func (p StaticProvider) Authenticate(_ context.Context, header string) (Identity
 	if !tok.Expires.IsZero() && time.Now().After(tok.Expires) {
 		return Identity{}, status.Error(codes.Unauthenticated, "token expired")
 	}
-	return Identity{Org: tok.Org, Write: tok.Write}, nil
+	return Identity{Org: tok.Org, Write: tok.Write, Expires: tok.Expires}, nil
 }
 
 // JWKSProvider authenticates JWT-shaped credentials against a priompt-auth
@@ -123,7 +126,7 @@ func (p JWKSProvider) Authenticate(_ context.Context, header string) (Identity, 
 	if err != nil {
 		return Identity{}, ErrUnrecognized
 	}
-	return Identity{Sub: c.Sub, Org: c.Org, Write: c.RW}, nil
+	return Identity{Sub: c.Sub, Org: c.Org, Write: c.RW, Expires: time.Unix(c.Exp, 0)}, nil
 }
 
 // Interceptor authenticates every RPC through the provider chain and attaches
