@@ -279,9 +279,11 @@ func loadClients(file string) map[string]client {
 		if len(fields) < 2 || !strings.HasPrefix(fields[1], "sha256:") {
 			log.Fatalf("%s: want `client_id sha256:<hex> [org] [rw]`, got %q", file, strings.Join(fields, " "))
 		}
-		c := client{secretHash: strings.TrimPrefix(fields[1], "sha256:")}
-		c.grant = parseGrant(fields[2:])
-		out[fields[0]] = c
+		g, err := parseGrant(fields[2:])
+		if err != nil {
+			log.Fatalf("%s: client %s: %v", file, fields[0], err)
+		}
+		out[fields[0]] = client{secretHash: strings.TrimPrefix(fields[1], "sha256:"), grant: g}
 	}
 	return out
 }
@@ -290,12 +292,18 @@ func loadClients(file string) map[string]client {
 func loadGroups(file string) []groupRule {
 	var out []groupRule
 	for _, fields := range configLines(file) {
-		out = append(out, groupRule{group: fields[0], grant: parseGrant(fields[1:])})
+		g, err := parseGrant(fields[1:])
+		if err != nil {
+			log.Fatalf("%s: group %s: %v", file, fields[0], err)
+		}
+		out = append(out, groupRule{group: fields[0], grant: g})
 	}
 	return out
 }
 
-func parseGrant(fields []string) grant {
+// parseGrant reads `[org] [rw|ro]`; a second org-looking field is an error
+// rather than a silent last-wins.
+func parseGrant(fields []string) (grant, error) {
 	var g grant
 	for _, f := range fields {
 		switch f {
@@ -303,10 +311,13 @@ func parseGrant(fields []string) grant {
 			g.rw = true
 		case "ro": // explicit read-only (the default); no-op
 		default:
+			if g.org != "" {
+				return grant{}, fmt.Errorf("two orgs (%q, %q); a trailing comment needs a leading #", g.org, f)
+			}
 			g.org = f
 		}
 	}
-	return g
+	return g, nil
 }
 
 func configLines(file string) [][]string {
@@ -320,7 +331,14 @@ func configLines(file string) [][]string {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		out = append(out, strings.Fields(line))
+		fields := strings.Fields(line)
+		for i, f := range fields {
+			if strings.HasPrefix(f, "#") { // trailing comment
+				fields = fields[:i]
+				break
+			}
+		}
+		out = append(out, fields)
 	}
 	return out
 }
