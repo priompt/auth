@@ -164,11 +164,11 @@ func TestOIDCExchange(t *testing.T) {
 
 	exp := time.Now().Add(time.Hour)
 	code, tok := getToken(t, srv, url.Values{
-		"grant_type": {"oidc"}, "id_token": {f.idToken(t, f.srv.URL, "sujal@acme.com", []string{"acme-authors"}, exp)}})
+		"grant_type": {"oidc"}, "id_token": {f.idToken(t, f.srv.URL, "ada@example.com", []string{"acme-authors"}, exp)}})
 	if code != 200 {
 		t.Fatalf("valid ID token must exchange, got %d", code)
 	}
-	if c := decodeClaims(t, tok); c.Sub != "sujal@acme.com" || c.Org != "acme" || !c.RW {
+	if c := decodeClaims(t, tok); c.Sub != "ada@example.com" || c.Org != "acme" || !c.RW {
 		t.Errorf("wrong mapped claims: %+v", c)
 	}
 
