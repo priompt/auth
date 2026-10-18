@@ -30,7 +30,8 @@ func GenToken() (string, error) {
 // or RFC3339 timestamp; the keyword `rw` grants write (default is read-only,
 // `ro` is the explicit no-op). Fields after the token are order-independent:
 // `rw`/`ro` is recognized by keyword, a date/timestamp as the expiry, anything
-// else as the org. Blank lines and # comments are ignored. An empty file name
+// else as the org; a second org or expiry is an error. Blank lines, # comment
+// lines, and a trailing `# …` after the token are ignored. An empty file name
 // with no PRIOMPT_TOKEN yields an empty map = auth disabled. To rotate: add the
 // new token, give the old one a near-future expiry, drop it once it lapses.
 func LoadTokens(file string) (map[string]Token, error) {
@@ -53,18 +54,27 @@ func LoadTokens(file string) (map[string]Token, error) {
 		fields := strings.Fields(line)
 		tok := Token{}
 		for _, f := range fields[1:] {
+			if strings.HasPrefix(f, "#") {
+				break // trailing comment
+			}
 			switch {
 			case f == "rw":
 				tok.Write = true
 			case f == "ro":
 				// explicit read-only (the default); no-op
 			case isExpiry(f):
+				if !tok.Expires.IsZero() {
+					return nil, fmt.Errorf("token line has two expiries (%q); a trailing comment needs a leading #", f)
+				}
 				exp, err := parseExpiry(f)
 				if err != nil {
 					return nil, err
 				}
 				tok.Expires = exp
 			default:
+				if tok.Org != "" {
+					return nil, fmt.Errorf("token line has two orgs (%q, %q); a trailing comment needs a leading #", tok.Org, f)
+				}
 				tok.Org = f
 			}
 		}

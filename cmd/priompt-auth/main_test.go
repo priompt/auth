@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -190,5 +192,33 @@ func TestOIDCExchange(t *testing.T) {
 	if code, _ := getToken(t, srv, url.Values{
 		"grant_type": {"oidc"}, "id_token": {f.idToken(t, f.srv.URL, "x", []string{"acme-authors"}, time.Now().Add(-time.Minute))}}); code != 401 {
 		t.Errorf("expired ID token must 401, got %d", code)
+	}
+}
+
+// Trailing # comments in clients.txt / groups.txt are not fields: the README's
+// own `prompt-admins rw # platform team` must stay an admin grant (issue #2).
+func TestConfigTrailingComments(t *testing.T) {
+	dir := t.TempDir()
+	groups := filepath.Join(dir, "groups.txt")
+	os.WriteFile(groups, []byte("# header\nprompt-admins rw # platform team\nacme-readers acme # read-only\n"), 0o600)
+	g := loadGroups(groups)
+	if len(g) != 2 || g[0].grant != (grant{rw: true}) || g[1].grant != (grant{org: "acme"}) {
+		t.Errorf("trailing comments parsed as fields: %+v", g)
+	}
+
+	clients := filepath.Join(dir, "clients.txt")
+	os.WriteFile(clients, []byte("ci-bot sha256:abcd acme rw # ci runner\n"), 0o600)
+	if c := loadClients(clients)["ci-bot"]; c.grant != (grant{org: "acme", rw: true}) || c.secretHash != "abcd" {
+		t.Errorf("trailing comment changed the client grant: %+v", c)
+	}
+}
+
+// Two org-looking fields are ambiguous; reject instead of last-wins.
+func TestParseGrantRejectsExtraFields(t *testing.T) {
+	if g, err := parseGrant([]string{"acme", "rw", "platform", "team"}); err == nil {
+		t.Errorf("want an error for two orgs, got %+v", g)
+	}
+	if g, err := parseGrant([]string{"acme", "rw"}); err != nil || g != (grant{org: "acme", rw: true}) {
+		t.Errorf("want acme rw, got %+v err=%v", g, err)
 	}
 }
