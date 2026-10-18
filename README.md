@@ -124,7 +124,7 @@ and the core server's verifier — the two halves cannot drift:
 
 | Claim | Example | Meaning |
 | --- | --- | --- |
-| `sub` | `ci-bot`, `sujal@acme.com` | who this token was issued to (lands in audit logs and commit authorship) |
+| `sub` | `ci-bot`, `ada@example.com` | who this token was issued to (lands in audit logs and commit authorship) |
 | `org` | `acme` (`""` = admin) | org scope — same rule as static tokens: only `priompt://acme/…` |
 | `rw` | `true` | may publish/branch/merge/rollback; read-only otherwise |
 | `exp` / `iat` | unix seconds | always set; default TTL 15 minutes (`-ttl`) |
