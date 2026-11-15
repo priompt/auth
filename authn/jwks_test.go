@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -126,5 +127,111 @@ func TestIdentityExpires(t *testing.T) {
 	id, err = p.Authenticate(ctx, "Bearer "+MintJWT(priv, "k1", Claims{Org: "acme", Exp: exp.Unix()}))
 	if err != nil || !id.Expires.Equal(exp) {
 		t.Fatalf("jwt: Expires = %v err=%v, want %v", id.Expires, err, exp)
+	}
+}
+
+// rotatingJWKS serves whatever key is current; swap it to simulate rotation.
+type rotatingJWKS struct {
+	mu  sync.Mutex
+	kid string
+	pub ed25519.PublicKey
+}
+
+func (r *rotatingJWKS) set(kid string, pub ed25519.PublicKey) {
+	r.mu.Lock()
+	r.kid, r.pub = kid, pub
+	r.mu.Unlock()
+}
+
+func (r *rotatingJWKS) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	w.Write(JWKSJSON(r.pub, r.kid))
+}
+
+// A key rotated out of the JWKS must stop verifying without a restart — the
+// response to a leaked signing key.
+func TestRotatedOutKeyStopsVerifying(t *testing.T) {
+	oldPub, oldPriv, _ := ed25519.GenerateKey(nil)
+	newPub, newPriv, _ := ed25519.GenerateKey(nil)
+	jw := &rotatingJWKS{}
+	jw.set("old", oldPub)
+	srv := httptest.NewServer(jw)
+	t.Cleanup(srv.Close)
+	ks := NewKeySet(srv.URL)
+	exp := time.Now().Add(time.Hour).Unix()
+	oldTok := MintJWT(oldPriv, "old", Claims{Sub: "x", Exp: exp})
+	newTok := MintJWT(newPriv, "new", Claims{Sub: "x", Exp: exp})
+
+	if _, err := ks.Verify(oldTok); err != nil {
+		t.Fatalf("old key before rotation: %v", err)
+	}
+	jw.set("new", newPub)
+
+	// Path 1: an unknown kid triggers a fetch, which must replace the set.
+	ks.mu.Lock()
+	ks.fetched = time.Time{} // past the rate limit
+	ks.mu.Unlock()
+	if _, err := ks.Verify(newTok); err != nil {
+		t.Fatalf("new key after rotation: %v", err)
+	}
+	if _, err := ks.Verify(oldTok); err == nil {
+		t.Fatal("old key still verifies after a fetch that no longer serves it")
+	}
+
+	// Path 2: with no unknown kid ever presented, a stale cache is refreshed.
+	ks2 := NewKeySet(srv.URL)
+	jw.set("old", oldPub)
+	if _, err := ks2.Verify(oldTok); err != nil {
+		t.Fatal(err)
+	}
+	jw.set("new", newPub)
+	ks2.mu.Lock()
+	ks2.fetched = time.Now().Add(-maxKeyAge - time.Second)
+	ks2.mu.Unlock()
+	ks2.Verify(oldTok) // served from cache; starts the background refresh
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := ks2.Verify(oldTok); err != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("old key still verifies after the key set went stale")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A failed background refresh keeps serving the cached keys.
+func TestStaleRefreshFailureKeepsCachedKeys(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	up := true
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !up {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		w.Write(JWKSJSON(pub, "k"))
+	}))
+	t.Cleanup(srv.Close)
+	ks := NewKeySet(srv.URL)
+	tok := MintJWT(priv, "k", Claims{Sub: "x", Exp: time.Now().Add(time.Hour).Unix()})
+	if _, err := ks.Verify(tok); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	up = false
+	mu.Unlock()
+	ks.mu.Lock()
+	ks.fetched = time.Now().Add(-maxKeyAge - time.Second)
+	ks.mu.Unlock()
+	for i := 0; i < 20; i++ {
+		if _, err := ks.Verify(tok); err != nil {
+			t.Fatalf("auth service down: cached key must keep verifying, got %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
