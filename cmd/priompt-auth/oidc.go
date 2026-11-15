@@ -22,7 +22,7 @@ import (
 
 type idp struct {
 	issuer   string
-	audience string // "" = don't check aud
+	audience string // required aud (and azp, when present)
 	jwksURI  string
 	client   *http.Client
 
@@ -34,6 +34,9 @@ type idp struct {
 // newIDP discovers the issuer's JWKS endpoint via OIDC discovery. Fails fast:
 // a misconfigured issuer should stop `serve`, not surface per-request.
 func newIDP(issuer, audience string) (*idp, error) {
+	if audience == "" {
+		return nil, errors.New("an OIDC audience is required: ID tokens for other apps in the tenant would be accepted")
+	}
 	i := &idp{issuer: issuer, audience: audience,
 		client: &http.Client{Timeout: 5 * time.Second}, keys: map[string]*rsa.PublicKey{}}
 	resp, err := i.client.Get(strings.TrimSuffix(issuer, "/") + "/.well-known/openid-configuration")
@@ -140,6 +143,7 @@ func (i *idp) verify(raw string) (sub string, groups []string, err error) {
 		Sub    string          `json:"sub"`
 		Iss    string          `json:"iss"`
 		Aud    json.RawMessage `json:"aud"` // string or []string per spec
+		Azp    string          `json:"azp"`
 		Exp    int64           `json:"exp"`
 		Groups []string        `json:"groups"`
 	}
@@ -152,8 +156,12 @@ func (i *idp) verify(raw string) (sub string, groups []string, err error) {
 	if c.Exp == 0 || time.Now().Unix() > c.Exp {
 		return "", nil, errors.New("ID token expired")
 	}
-	if i.audience != "" && !audContains(c.Aud, i.audience) {
+	if !audContains(c.Aud, i.audience) {
 		return "", nil, errors.New("audience mismatch")
+	}
+	// With several audiences, azp names the party the token was issued to.
+	if c.Azp != "" && c.Azp != i.audience {
+		return "", nil, errors.New("authorized party mismatch")
 	}
 	return c.Sub, c.Groups, nil
 }

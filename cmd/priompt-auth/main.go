@@ -130,7 +130,7 @@ func serveCmd(args []string) {
 	clientsFile := fs.String("clients-file", "", "service accounts: `client_id sha256:<hex> [org] [rw]` lines (# comments ok)")
 	groupsFile := fs.String("groups-file", "", "IdP group mapping: `group [org] [rw]` lines; no org = admin; first match wins")
 	oidcIssuer := fs.String("oidc-issuer", "", "OIDC issuer URL of the corporate IdP; enables grant_type=oidc")
-	oidcAudience := fs.String("oidc-audience", "", "required aud claim on IdP tokens (empty = not checked)")
+	oidcAudience := fs.String("oidc-audience", "", "required aud claim on IdP tokens: the client ID of priompt's app at the IdP (required with -oidc-issuer)")
 	ttl := fs.Duration("ttl", 15*time.Minute, "lifetime of issued tokens")
 	fs.Parse(args)
 
@@ -147,6 +147,12 @@ func serveCmd(args []string) {
 	if *oidcIssuer != "" {
 		if *groupsFile == "" {
 			log.Fatal("-oidc-issuer requires -groups-file (or every login would be denied)")
+		}
+		// One IdP issuer signs ID tokens for every app in the tenant. Without an
+		// audience check, a token issued to any of them would be exchangeable here.
+		if *oidcAudience == "" {
+			log.Fatal("-oidc-issuer requires -oidc-audience (the client ID of priompt's app at the IdP), " +
+				"or ID tokens issued to other apps in the tenant would be accepted")
 		}
 		s.groups = loadGroups(*groupsFile)
 		idp, err := newIDP(*oidcIssuer, *oidcAudience)

@@ -140,8 +140,13 @@ func newFakeIdP(t *testing.T) *fakeIdP {
 
 func (f *fakeIdP) idToken(t *testing.T, iss, sub string, groups []string, exp time.Time) string {
 	t.Helper()
+	return f.idTokenClaims(t, map[string]any{"iss": iss, "sub": sub, "aud": "priompt", "exp": exp.Unix(), "groups": groups})
+}
+
+func (f *fakeIdP) idTokenClaims(t *testing.T, claims map[string]any) string {
+	t.Helper()
 	h := b64(map[string]string{"alg": "RS256", "typ": "JWT", "kid": "idp1"})
-	p := b64(map[string]any{"iss": iss, "sub": sub, "aud": "priompt", "exp": exp.Unix(), "groups": groups})
+	p := b64(claims)
 	sum := sha256.Sum256([]byte(h + "." + p))
 	sig, err := rsa.SignPKCS1v15(rand.Reader, f.priv, crypto.SHA256, sum[:])
 	if err != nil {
@@ -192,6 +197,34 @@ func TestOIDCExchange(t *testing.T) {
 	if code, _ := getToken(t, srv, url.Values{
 		"grant_type": {"oidc"}, "id_token": {f.idToken(t, f.srv.URL, "x", []string{"acme-authors"}, time.Now().Add(-time.Minute))}}); code != 401 {
 		t.Errorf("expired ID token must 401, got %d", code)
+	}
+
+	// A token the same IdP issued to another app in the tenant must not exchange.
+	other := func(claims map[string]any) int {
+		base := map[string]any{"iss": f.srv.URL, "sub": "x", "exp": exp.Unix(), "groups": []string{"prompt-admins"}}
+		for k, v := range claims {
+			base[k] = v
+		}
+		code, _ := getToken(t, srv, url.Values{"grant_type": {"oidc"}, "id_token": {f.idTokenClaims(t, base)}})
+		return code
+	}
+	if code := other(map[string]any{"aud": "some-other-app"}); code != 401 {
+		t.Errorf("ID token for another audience must 401, got %d", code)
+	}
+	if code := other(map[string]any{"aud": []string{"priompt", "some-other-app"}, "azp": "some-other-app"}); code != 401 {
+		t.Errorf("ID token issued to another party (azp) must 401, got %d", code)
+	}
+	if code := other(map[string]any{}); code != 401 {
+		t.Errorf("ID token without aud must 401, got %d", code)
+	}
+}
+
+// Without an audience every ID token from the tenant would be accepted, so
+// the IdP cannot be configured without one.
+func TestOIDCRequiresAudience(t *testing.T) {
+	f := newFakeIdP(t)
+	if _, err := newIDP(f.srv.URL, ""); err == nil {
+		t.Fatal("newIDP with an empty audience must fail")
 	}
 }
 

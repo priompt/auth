@@ -98,8 +98,9 @@ curl -s -X POST localhost:8444/token -d grant_type=oidc -d id_token=<IdP ID toke
 ```
 
 The service checks the ID token's signature (via the issuer's JWKS), issuer,
-expiry, and — if `-oidc-audience` is set — audience, then maps the caller's
-`groups` claim through `groups.txt`.
+expiry and audience (`-oidc-audience`, required with `-oidc-issuer`: the client
+ID of priompt's app at the IdP), then maps the caller's `groups` claim through
+`groups.txt`.
 
 ## Service accounts
 
