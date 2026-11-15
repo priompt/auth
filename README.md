@@ -3,7 +3,7 @@
 **The ID-card office for Priompt.** It trades a credential your company already
 trusts — a corporate SSO login, or a service-account secret — for a
 **short-lived pass** (a signed JWT) that the
-[Priompt](https://github.com/) server accepts. The server checks passes on its
+[Priompt](https://github.com/priompt/priompt) server accepts. The server checks passes on its
 own, without phoning this service, so issuing and serving never share fate.
 
 ## The 30-second version
@@ -155,7 +155,7 @@ needs no server restart.
 
 ## `authn` — the importable half
 
-This repo is two things: the `priompt-auth` **binary** at the root, and the
+This repo is two things: the `priompt-auth` **binary** in `cmd/priompt-auth`, and the
 `github.com/priompt/auth/authn` **package** it and the core server both import.
 
 `authn` owns every credential mechanic in the family:
