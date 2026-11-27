@@ -26,6 +26,36 @@ func jwksServer(t *testing.T, kid string, pub ed25519.PublicKey) *httptest.Serve
 // TestMintVerifyRoundTrip closes the loop the split repos could never test: a
 // token minted by the issuer, published through the real JWKS renderer, and
 // verified by the consumer — all three halves of the contract in one place.
+func TestExpiredJWTMessage(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	srv := jwksServer(t, "k1", pub)
+	tok := MintJWT(priv, "k1", Claims{Sub: "ci", Exp: time.Now().Add(-time.Minute).Unix()})
+	_, err := NewJWKS(srv.URL).Authenticate(context.Background(), "Bearer "+tok)
+	t.Logf("err = %v", err)
+	if err == nil || err.Error() != "rpc error: code = Unauthenticated desc = token expired" {
+		t.Errorf("expired JWT must be rejected with 'token expired', got err = %v", err)
+	}
+}
+
+// A token whose signature is bad must keep the generic message even when
+// its exp has also passed: the signature is checked before expiry, so a
+// token that was never valid reveals nothing about itself.
+func TestExpiredJWTBadSignatureKeepsGenericMessage(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(nil)
+	srv := jwksServer(t, "k1", pub)
+	_, otherPriv, _ := ed25519.GenerateKey(nil)
+	tok := MintJWT(otherPriv, "k1", Claims{Sub: "ci", Exp: time.Now().Add(-time.Minute).Unix()})
+	_, err := NewJWKS(srv.URL).Authenticate(context.Background(), "Bearer "+tok)
+	if err == nil || err.Error() != "credential not recognized" {
+		t.Errorf("bad-signature token with a past exp must stay unrecognized, got err = %v", err)
+	}
+	// And through the interceptor it must surface as the generic message.
+	chain := Interceptor(NewJWKS(srv.URL))
+	if ok, _, _ := run(chain, "Bearer "+tok); ok {
+		t.Error("bad-signature token must not pass the interceptor")
+	}
+}
+
 func TestMintVerifyRoundTrip(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	kid := KeyID(pub)
