@@ -55,6 +55,12 @@ type Provider interface {
 // credential, letting the interceptor fall through to the next provider.
 var ErrUnrecognized = errors.New("credential not recognized")
 
+// ErrExpired is returned by KeySet.Verify when a token's signature is valid
+// but its exp has passed. Unlike other verification failures it is not
+// collapsed into ErrUnrecognized: expiry is the expected, recoverable
+// failure (fetch a new token), so the caller is told exactly that.
+var ErrExpired = errors.New("token expired")
+
 // Token is a bearer credential: the org it is scoped to ("" = admin, all orgs),
 // an optional expiry (zero = never expires), and whether it may write. Write is
 // opt-in — a token authors only if Write is set; otherwise it is read-only.
@@ -124,6 +130,9 @@ func (p JWKSProvider) Authenticate(_ context.Context, header string) (Identity, 
 	}
 	c, err := p.Keys.Verify(raw)
 	if err != nil {
+		if errors.Is(err, ErrExpired) {
+			return Identity{}, status.Error(codes.Unauthenticated, "token expired")
+		}
 		return Identity{}, ErrUnrecognized
 	}
 	return Identity{Sub: c.Sub, Org: c.Org, Write: c.RW, Expires: time.Unix(c.Exp, 0)}, nil

@@ -213,7 +213,7 @@ func (k *KeySet) Verify(raw string) (Claims, error) {
 		return Claims{}, errors.New("missing exp")
 	}
 	if time.Now().Unix() > c.Exp {
-		return Claims{}, errors.New("token expired")
+		return Claims{}, ErrExpired
 	}
 	return c, nil
 }
